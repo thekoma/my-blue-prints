@@ -1,0 +1,51 @@
+blueprint:
+  name: Accendi/Spegni Luce con Sensore Porta (On/Off)
+  description: >-
+    Accende o spegne una luce seguendo lo stato (on/off)
+    di un sensore (es. porta, finestra, contatto).
+    Ignora transizioni a stati 'unknown' o 'unavailable'.
+  domain: automation
+
+  # -----------------------------------------------------------------
+  # INPUT: Qui definisci cosa l'utente dovrà selezionare
+  # -----------------------------------------------------------------
+  input:
+    door_sensor:
+      name: Sensore Porta/Contatto
+      description: Il sensore (binary_sensor) che fa scattare l'automazione.
+      selector:
+        entity:
+          # Filtra solo i sensori binari (on/off)
+          domain: binary_sensor
+
+    light_target:
+      name: Luce da controllare
+      description: La luce (o le luci) da accendere/spegnere.
+      selector:
+        target:
+          # Permette di selezionare entità, aree o dispositivi
+          # ma filtra per applicarsi solo alle luci
+          entity:
+            domain: light
+
+# -----------------------------------------------------------------
+# LOGICA: Questa è la tua automazione "template"
+# -----------------------------------------------------------------
+
+# Modalità 'single' per evitare esecuzioni multiple se la porta "sfarfalla"
+mode: single
+
+trigger:
+  - platform: state
+    # Usa l'input del sensore definito sopra
+    entity_id: !input door_sensor
+    # Il fix cruciale: reagisci solo a 'on' e 'off'
+    to:
+      - 'on'
+      - 'off'
+
+action:
+  # Il servizio dinamico che usa lo stato del trigger (che sarà solo 'on' o 'off')
+  - service: "light.turn_{{ trigger.to_state.state }}"
+    # Usa l'input della luce definito sopra
+    target: !input light_target
