@@ -1,0 +1,102 @@
+blueprint:
+  name: Allarme Allagamento Ripetuto (Notifica Urgente)
+  description: Invia una notifica urgente e ripetuta (con suono) usando una logica avanzata per targettizzare i dispositivi.
+  domain: automation
+  source_url: 'https://github.com/Koma85/ha-blueprints/blob/main/automation/flood_alarm_urgent.yaml'
+
+  input:
+    flood_sensor:
+      name: Sensore di Allagamento
+      description: 'Seleziona il sensore di allagamento (binary_sensor con device_class: moisture).'
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class: moisture
+
+    repeat_delay:
+      name: Frequenza di Ripetizione (minuti)
+      description: Ogni quanti minuti ripetere la notifica finché l'allarme è attivo.
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: minutes
+
+    notify_device:
+      name: Dispositivi di Notifica (Companion App)
+      description: Seleziona i dispositivi a cui inviare la notifica.
+      selector:
+        device:
+          integration: mobile_app
+          multiple: true
+
+    notify_group:
+      name: Gruppo di Notifica (Opzionale)
+      description: Nome di un gruppo di notifica da chiamare (es. 'notify' per tutti).
+      default: ''
+
+    notification_title:
+      name: Titolo della Notifica
+      default: "⚠️ ALLARME ALLAGAMENTO ⚠️"
+
+    notification_message:
+      name: Messaggio della Notifica
+      default: "Rilevata acqua dal sensore '{{ entity_name }}'!"
+
+trigger:
+  - platform: state
+    entity_id: !input flood_sensor
+    to: "on"
+    from: "off"
+
+action:
+  - variables:
+      flood_sensor_id: !input flood_sensor
+      device_list: !input notify_device
+      group_name: !input notify_group
+
+      entity_name: "{{ states[flood_sensor_id].name }}"
+      notify_targets: >
+        {% set ns = namespace(targets=[]) %}
+        {% if device_list is iterable %}
+          {% for device_id in device_list -%}
+            {% if device_id -%}
+                {% set ns.targets = ns.targets + [ "notify.mobile_app_" ~ device_attr( device_id, 'name' )|slugify ] %}
+            {%- endif %}
+          {%- endfor %}
+        {%- endif %}
+        {% if group_name is defined and group_name is string and group_name != '' %}
+            {% set ns.targets = ns.targets + [ "notify." ~ group_name|slugify ] %}
+        {%- endif %}
+        {{ ns.targets }}
+
+  - repeat:
+      while:
+        - condition: state
+          entity_id: !input flood_sensor
+          state: "on"
+      sequence:
+        - repeat:
+            for_each: "{{ notify_targets }}"
+            sequence:
+              - service: "{{ repeat.item }}"
+                data:
+                  title: !input notification_title
+                  message: !input notification_message
+                  # --- SEZIONE AGGIUNTA PER LE NOTIFICHE URGENTI ---
+                  data:
+                    # Per Android: usa il canale della sveglia per ignorare il silenzioso
+                    channel: alarm_stream
+                    priority: high
+                    ttl: 0 # Time To Live, 0=indefinito
+                    # Per iOS: usa le notifiche critiche
+                    push:
+                      sound:
+                        name: default
+                        critical: 1
+                        volume: 1.0
+        - delay:
+            minutes: !input repeat_delay
+
+mode: single

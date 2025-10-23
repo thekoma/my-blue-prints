@@ -1,0 +1,101 @@
+blueprint:
+  name: Notifica Lista della Spesa
+  description: Invia una notifica con la lista della spesa quando una persona entra in determinate zone
+  domain: automation
+  input:
+    person_entity:
+      name: Persona
+      description: La persona che attiva la notifica
+      selector:
+        entity:
+          domain: person
+
+    zone:
+      name: Zone
+      description: Lista delle zone dove inviare la notifica
+      selector:
+        entity:
+          domain: zone
+          multiple: false
+
+    notify_device:
+      name: Dispositivo per le notifiche
+      description: Dispositivo mobile che riceverà la notifica
+      selector:
+        device:
+          integration: mobile_app
+
+    opening_time:
+      name: Orario di apertura
+      description: Ora di apertura dei negozi
+      default: "08:00:00"
+      selector:
+        time: {}
+
+    closing_time:
+      name: Orario di chiusura
+      description: Ora di chiusura dei negozi
+      default: "22:00:00"
+      selector:
+        time: {}
+
+    zone_duration:
+      name: Tempo di permanenza
+      description: Tempo minimo di permanenza nella zona prima di inviare la notifica
+      default: 180
+      selector:
+        number:
+          min: 0
+          max: 3600
+          unit_of_measurement: secondi
+          mode: slider
+          step: 30
+
+trigger:
+  - platform: event
+    event_type: zone_trigger
+    variables:
+      zones: !input zone
+    event_data:
+      entity_id: !input person_entity
+      zone: "{{ zone }}"
+      event: enter
+
+condition:
+  # Verifica che la lista della spesa non sia vuota
+  - condition: numeric_state
+    entity_id: todo.shopping_list
+    above: 0
+
+  # Verifica che la persona sia rimasta nella zona per il tempo specificato
+  - condition: state
+    entity_id: !input person_entity
+    state: "{{ trigger.to_state.state }}"
+    for: "{{ timedelta(seconds=input.zone_duration) }}"
+
+  # Verifica che sia nell'orario di apertura
+  - condition: time
+    after: !input opening_time
+    before: !input closing_time
+
+action:
+  - device_id: !input notify_device
+    domain: mobile_app
+    type: notify
+    title: "Lista della spesa"
+    message: >
+      Hai {{ states('todo.shopping_list') }} elementi nella lista della spesa
+    data:
+      clickAction: "/todo?entity_id=todo.shopping_list"
+      push:
+        category: "shopping_list"
+        sound:
+          name: default
+          critical: 1
+          volume: 1.0
+      importance: high
+      priority: high
+      ttl: 0
+      channel: alarm_stream # Per Android
+      alert_once: false # Per Android
+      vibrationPattern: "100, 1000, 100, 1000, 100" # Per Android
