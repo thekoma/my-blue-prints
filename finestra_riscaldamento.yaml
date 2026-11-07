@@ -1,0 +1,335 @@
+blueprint:
+  name: Finestra aperta → avvisi → stop riscaldamento
+  description: >-
+    Quando fuori fa freddo e una finestra resta aperta troppo a lungo (tempo
+    scalato sul ΔT stanza/esterno) o la stanza scende sotto soglia: avviso,
+    secondo avviso, poi spegne il riscaldamento della stanza e ripete un
+    promemoria finché la finestra non viene chiusa. Alla chiusura ripristina
+    il riscaldamento (programma Tado se indicata la zona cloud, altrimenti
+    heat sui termostati) e cancella la notifica da tutti i telefoni.
+    Sopravvive ai riavvii: il flag "sospeso" è un input_boolean.
+  domain: automation
+  source_url: https://github.com/thekoma/my-blue-prints/blob/main/finestra_riscaldamento.yaml
+  input:
+    stanza:
+      name: Stanza
+      description: Nome mostrato nelle notifiche
+      selector: {text: {}}
+    finestre:
+      name: Finestre
+      selector: {entity: {filter: [{domain: binary_sensor}, {domain: input_boolean}], multiple: true}}
+    temp_stanza:
+      name: Temperatura stanza
+      selector: {entity: {filter: [{domain: sensor, device_class: temperature}]}}
+    termostati:
+      name: Termostati da spegnere
+      description: Entità climate locali (Tado via HomeKit). Tutte vengono spente e ripristinate.
+      selector: {entity: {filter: [{domain: climate}], multiple: true}}
+    zona_tado:
+      name: Zona Tado cloud (facoltativa)
+      description: Se indicata, al ripristino rimette la zona in auto (Smart Schedule) invece di lasciare un override manuale.
+      default: ""
+      selector: {entity: {filter: [{domain: climate}]}}
+    temp_esterna:
+      name: Temperatura esterna
+      default: sensor.casella_outdoor_temperature
+      selector: {entity: {filter: [{domain: sensor, device_class: temperature}]}}
+    flag_sospeso:
+      name: Flag "riscaldamento sospeso"
+      description: input_boolean dedicato alla stanza. Ricorda che lo spegnimento l'ha fatto questa automazione.
+      selector: {entity: {filter: [{domain: input_boolean}]}}
+    inibitore:
+      name: Inibitore (facoltativo)
+      description: input_boolean che, se acceso, rimanda il conteggio (es. ventilazione dopo la doccia).
+      default: ""
+      selector: {entity: {filter: [{domain: input_boolean}]}}
+    telefoni:
+      name: Telefoni da avvisare
+      selector: {device: {filter: [{integration: mobile_app}], multiple: true}}
+    soglia_esterna:
+      name: Freddo fuori sotto
+      default: 18
+      selector: {number: {min: 0, max: 30, step: 0.5, unit_of_measurement: °C}}
+    soglia_stanza:
+      name: Stanza troppo fredda sotto
+      default: 17
+      selector: {number: {min: 10, max: 25, step: 0.5, unit_of_measurement: °C}}
+    soglia_critica:
+      name: Spegnimento immediato sotto
+      default: 15
+      selector: {number: {min: 5, max: 25, step: 0.5, unit_of_measurement: °C}}
+    tempo_min:
+      name: Tempo concesso con ΔT alto
+      default: 10
+      selector: {number: {min: 1, max: 120, unit_of_measurement: min}}
+    tempo_max:
+      name: Tempo concesso con ΔT basso
+      default: 20
+      selector: {number: {min: 1, max: 120, unit_of_measurement: min}}
+    dt_alto:
+      name: ΔT alto (stanza − esterno)
+      default: 23
+      selector: {number: {min: 1, max: 40, unit_of_measurement: °C}}
+    dt_basso:
+      name: ΔT basso (stanza − esterno)
+      default: 4
+      selector: {number: {min: 0, max: 39, unit_of_measurement: °C}}
+    passo:
+      name: Intervallo tra avvisi
+      default: 15
+      selector: {number: {min: 1, max: 60, unit_of_measurement: min}}
+    canale:
+      name: Canale notifiche Android
+      description: Canale dedicato; suono e priorità si regolano dal telefono (Impostazioni app → Notifiche).
+      default: Finestre
+      selector: {text: {}}
+    debounce:
+      name: Finestra aperta da almeno
+      default: 60
+      selector: {number: {min: 0, max: 600, unit_of_measurement: s}}
+
+mode: restart
+max_exceeded: silent
+
+trigger_variables:
+  inib_t: !input inibitore
+
+triggers:
+  - trigger: state
+    entity_id: !input finestre
+    to: "on"
+    for: {seconds: !input debounce}
+    id: aperta
+  - trigger: state
+    entity_id: !input finestre
+    to: "off"
+    for: {seconds: 10}
+    id: chiusa
+  - trigger: homeassistant
+    event: start
+    id: avvio
+  - trigger: template
+    value_template: "{{ inib_t != '' and is_state(inib_t, 'on') }}"
+    id: inibitore_on
+  - trigger: template
+    value_template: "{{ inib_t != '' and is_state(inib_t, 'off') }}"
+    id: inibitore_off
+
+variables:
+  stanza: !input stanza
+  finestre: !input finestre
+  temp_stanza: !input temp_stanza
+  termostati: !input termostati
+  zona_tado: !input zona_tado
+  temp_esterna: !input temp_esterna
+  flag: !input flag_sospeso
+  inibitore: !input inibitore
+  telefoni: !input telefoni
+  soglia_esterna: !input soglia_esterna
+  soglia_stanza: !input soglia_stanza
+  soglia_critica: !input soglia_critica
+  tempo_min: !input tempo_min
+  tempo_max: !input tempo_max
+  dt_alto: !input dt_alto
+  dt_basso: !input dt_basso
+  passo: !input passo
+  channel: !input canale
+  notify_targets: >-
+    {{ telefoni | map('device_attr','name') | map('slugify')
+       | map('regex_replace','^','mobile_app_') | list }}
+  tag: "finestra_{{ stanza | slugify }}"
+  aperte: "{{ expand(finestre) | selectattr('state','eq','on') | list | count > 0 }}"
+
+actions:
+  # ---------- finestra chiusa (o avvio con finestra chiusa): ripristino ----------
+  - if:
+      - condition: template
+        value_template: "{{ not aperte }}"
+    then:
+      - if:
+          - condition: template
+            value_template: "{{ is_state(flag, 'on') }}"
+        then:
+          - if:
+              - condition: template
+                value_template: "{{ zona_tado != '' }}"
+            then:
+              - action: climate.set_hvac_mode
+                continue_on_error: true
+                target: {entity_id: "{{ zona_tado }}"}
+                data: {hvac_mode: auto}
+              - delay: {seconds: 20}
+              - action: homeassistant.update_entity
+                continue_on_error: true
+                target: {entity_id: "{{ zona_tado }}"}
+              - delay: {seconds: 5}
+          # fallback: niente zona cloud, o la chiamata cloud non è andata (quota API)
+          - if:
+              - condition: template
+                value_template: >-
+                  {{ (zona_tado == '' or not is_state(zona_tado, 'auto'))
+                     and termostati | select('is_state','off') | list | count > 0 }}
+            then:
+              - action: climate.set_hvac_mode
+                target: {entity_id: "{{ termostati | select('is_state','off') | list }}"}
+                data: {hvac_mode: heat}
+          - action: input_boolean.turn_off
+            target: {entity_id: "{{ flag }}"}
+
+      - repeat:
+          for_each: "{{ notify_targets }}"
+          sequence:
+            - action: "notify.{{ repeat.item }}"
+              continue_on_error: true
+              data:
+                message: clear_notification
+                data:
+                  tag: "{{ tag }}"
+      - stop: finestra chiusa
+
+  # ---------- finestra aperta ----------
+  - condition: template
+    value_template: "{{ states(temp_esterna) | float(99) < soglia_esterna | float }}"
+  - if:
+      - condition: template
+        value_template: "{{ inibitore != '' }}"
+    then:
+      - wait_template: "{{ is_state(inibitore, 'off') }}"
+  - variables:
+      t_aperta: "{{ now().timestamp() }}"
+      dt: "{{ states(temp_stanza) | float(20) - states(temp_esterna) | float(10) }}"
+      frazione: >-
+        {% set f = (dt - dt_basso | float) / ((dt_alto | float - dt_basso | float) or 1) %}
+        {{ [0, [1, f] | min] | max }}
+      dopo_inibitore: "{{ trigger is defined and trigger.id == 'inibitore_off' }}"
+      concesso: >-
+        {{ 0 if dopo_inibitore else
+           (tempo_max | float - frazione * (tempo_max | float - tempo_min | float)) | round(0) | int }}
+  - wait_template: "{{ states(temp_stanza) | float(99) <= soglia_stanza | float }}"
+    timeout: "{{ [concesso | int * 60, 1] | max }}"
+    continue_on_timeout: true
+  - variables:
+      minuti: "{{ ((now().timestamp() - t_aperta) / 60) | round(0) | int }}"
+      riscaldamento_acceso: "{{ termostati | reject('is_state','off') | list | count > 0 }}"
+
+  - repeat:
+      for_each: "{{ notify_targets }}"
+      sequence:
+        - action: "notify.{{ repeat.item }}"
+          continue_on_error: true
+          data:
+            title: "🪟 {{ stanza }}: finestra aperta"
+            message: >-
+              {% if dopo_inibitore %}Vapore uscito, chiudi la finestra.{% elif states(temp_stanza) | float(99) <= soglia_stanza | float %}La stanza è scesa a {{ states(temp_stanza) }}°{% else %}Aperta da {{ minuti }} min{% endif %}.
+              Fuori {{ states(temp_esterna) }}°.{% if riscaldamento_acceso %} Se resta aperta, tra {{ (passo * 2) | int }} min spengo il riscaldamento.{% endif %}
+            data:
+              tag: "{{ tag }}"
+              channel: "{{ channel }}"
+              importance: high
+              priority: high
+              ttl: 0
+              sticky: true
+              alert_once: false
+              notification_icon: mdi:window-open-variant
+              color: "#2196F3"
+  - wait_template: "{{ states(temp_stanza) | float(99) <= soglia_critica | float }}"
+    timeout: "{{ passo | int * 60 }}"
+    continue_on_timeout: true
+  - variables:
+      critica: "{{ wait.completed }}"
+  - if:
+      - condition: template
+        value_template: "{{ not critica }}"
+    then:
+      - repeat:
+          for_each: "{{ notify_targets }}"
+          sequence:
+            - action: "notify.{{ repeat.item }}"
+              continue_on_error: true
+              data:
+                title: "🪟 {{ stanza }}: finestra ancora aperta"
+                message: >-
+                  Stanza a {{ states(temp_stanza) }}°.{% if riscaldamento_acceso %} Tra {{ passo | int }} min spengo il riscaldamento.{% endif %}
+                data:
+                  tag: "{{ tag }}"
+                  channel: "{{ channel }}"
+                  importance: high
+                  priority: high
+                  ttl: 0
+                  sticky: true
+                  alert_once: false
+                  notification_icon: mdi:window-open-variant
+                  color: "#2196F3"
+      - wait_template: "{{ states(temp_stanza) | float(99) <= soglia_critica | float }}"
+        timeout: "{{ passo | int * 60 }}"
+        continue_on_timeout: true
+  # ---------- spegnimento ----------
+  - variables:
+      da_spegnere: "{{ termostati | reject('is_state','off') | list }}"
+  - if:
+      - condition: template
+        value_template: "{{ da_spegnere | count > 0 }}"
+    then:
+      - action: input_boolean.turn_on
+        target: {entity_id: "{{ flag }}"}
+      - action: climate.set_hvac_mode
+        target: {entity_id: "{{ da_spegnere }}"}
+        data: {hvac_mode: "off"}
+
+      - repeat:
+          for_each: "{{ notify_targets }}"
+          sequence:
+            - action: "notify.{{ repeat.item }}"
+              continue_on_error: true
+              data:
+                title: "🔥 {{ stanza }}: riscaldamento spento"
+                message: >-
+                  Finestra aperta, stanza a {{ states(temp_stanza) }}°. Lo riaccendo quando chiudi.
+                data:
+                  tag: "{{ tag }}"
+                  channel: "{{ channel }}"
+                  importance: high
+                  priority: high
+                  ttl: 0
+                  sticky: true
+                  alert_once: false
+                  notification_icon: mdi:radiator-off
+                  color: "#FF5722"
+  # ---------- promemoria fino alla chiusura ----------
+  - repeat:
+      while:
+        - condition: template
+          value_template: "{{ expand(finestre) | selectattr('state','eq','on') | list | count > 0 }}"
+      sequence:
+        - delay: {minutes: "{{ passo }}"}
+        - variables:
+            riaccesi: "{{ termostati | reject('is_state','off') | list if is_state(flag,'on') else [] }}"
+        - if:
+            - condition: template
+              value_template: "{{ riaccesi | count > 0 }}"
+          then:
+            - action: climate.set_hvac_mode
+              target: {entity_id: "{{ riaccesi }}"}
+              data: {hvac_mode: "off"}
+        - variables:
+            minuti: "{{ ((now().timestamp() - t_aperta) / 60) | round(0) | int }}"
+
+        - repeat:
+            for_each: "{{ notify_targets }}"
+            sequence:
+              - action: "notify.{{ repeat.item }}"
+                continue_on_error: true
+                data:
+                  title: "🪟 {{ stanza }}: finestra ancora aperta"
+                  message: >-
+                    Da {{ minuti }} min, stanza a {{ states(temp_stanza) }}°.{% if is_state(flag,'on') %} Riscaldamento spento.{% endif %}
+                  data:
+                    tag: "{{ tag }}"
+                    channel: "{{ channel }}"
+                    importance: high
+                    priority: high
+                    ttl: 0
+                    sticky: true
+                    alert_once: false
+                    notification_icon: mdi:radiator-off
+                    color: "#FF5722"
