@@ -51,27 +51,27 @@ blueprint:
           mode: slider
           step: 30
 
+trigger_variables:
+  person: !input person_entity
+  target_zone: !input zone
+
 trigger:
-  - platform: event
-    event_type: zone_trigger
-    variables:
-      zones: !input zone
-    event_data:
-      entity_id: !input person_entity
-      zone: "{{ zone }}"
-      event: enter
+  # Persona nella zona da almeno zone_duration secondi.
+  # Lo stato di una person e' il nome della zona (o "home" per zone.home).
+  # Il vecchio trigger "event: zone_trigger" con zone: "{{ zone }}" non e' un
+  # template valido in event_data: non scattava mai.
+  - platform: template
+    value_template: >
+      {{ is_state(person, state_attr(target_zone, 'friendly_name'))
+         or (target_zone == 'zone.home' and is_state(person, 'home')) }}
+    for:
+      seconds: !input zone_duration
 
 condition:
   # Verifica che la lista della spesa non sia vuota
   - condition: numeric_state
     entity_id: todo.shopping_list
     above: 0
-
-  # Verifica che la persona sia rimasta nella zona per il tempo specificato
-  - condition: state
-    entity_id: !input person_entity
-    state: "{{ trigger.to_state.state }}"
-    for: "{{ timedelta(seconds=input.zone_duration) }}"
 
   # Verifica che sia nell'orario di apertura
   - condition: time
